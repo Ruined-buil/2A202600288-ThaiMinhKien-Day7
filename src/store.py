@@ -28,21 +28,46 @@ class EmbeddingStore:
         self._next_index = 0
 
         try:
-            import chromadb  # noqa: F401
-
-            # TODO: initialize chromadb client + collection
+            import chromadb
+            from chromadb.config import Settings
+            # Use Client with Settings for more control
+            self._client = chromadb.Client(Settings(
+                is_persistent=False,
+                allow_reset=True
+            ))
+            try:
+                self._client.reset()
+            except Exception:
+                pass
+                
+            self._collection = self._client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
             self._use_chroma = True
         except Exception:
             self._use_chroma = False
             self._collection = None
 
     def _make_record(self, doc: Document) -> dict[str, Any]:
-        # TODO: build a normalized stored record for one document
-        raise NotImplementedError("Implement EmbeddingStore._make_record")
+        embedding = self._embedding_fn(doc.content)
+        return {
+            "id": doc.id,
+            "content": doc.content,
+            "embedding": embedding,
+            "metadata": doc.metadata,
+        }
 
     def _search_records(self, query: str, records: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
-        # TODO: run in-memory similarity search over provided records
-        raise NotImplementedError("Implement EmbeddingStore._search_records")
+        query_embedding = self._embedding_fn(query)
+        scored_records = []
+        for rec in records:
+            score = _dot(query_embedding, rec["embedding"])
+            scored_records.append({**rec, "score": score})
+        
+        # Sort by score descending
+        scored_records.sort(key=lambda x: x["score"], reverse=True)
+        return scored_records[:top_k]
 
     def add_documents(self, docs: list[Document]) -> None:
         """
@@ -51,8 +76,37 @@ class EmbeddingStore:
         For ChromaDB: use collection.add(ids=[...], documents=[...], embeddings=[...])
         For in-memory: append dicts to self._store
         """
-        # TODO: embed each doc and add to store
-        raise NotImplementedError("Implement EmbeddingStore.add_documents")
+        if not docs:
+            return
+
+        ids = []
+        contents = []
+        embeddings = []
+        metadatas = []
+
+        for doc in docs:
+            record = self._make_record(doc)
+            if self._use_chroma:
+                ids.append(f"{doc.id}_{self._next_index}")
+                contents.append(doc.content)
+                embeddings.append(record["embedding"])
+                # Ensure metadata items are strings, ints, floats or bools for Chroma
+                clean_metadata = {k: v for k, v in doc.metadata.items() if isinstance(v, (str, int, float, bool))}
+                # Add doc_id to metadata for deletion support
+                clean_metadata["doc_id"] = doc.id
+                metadatas.append(clean_metadata)
+                self._next_index += 1
+            else:
+                record["metadata"]["doc_id"] = doc.id
+                self._store.append(record)
+
+        if self._use_chroma and self._collection:
+            self._collection.add(
+                ids=ids,
+                documents=contents,
+                embeddings=embeddings,
+                metadatas=metadatas
+            )
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """
@@ -60,13 +114,36 @@ class EmbeddingStore:
 
         For in-memory: compute dot product of query embedding vs all stored embeddings.
         """
-        # TODO: embed query, compute similarities, return top_k
-        raise NotImplementedError("Implement EmbeddingStore.search")
+        if self._use_chroma and self._collection:
+            query_embedding = self._embedding_fn(query)
+            results = self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k
+            )
+            # Reformat chroma results to match internal format
+            formatted = []
+            if results["documents"]:
+                for i in range(len(results["documents"][0])):
+                    # Convert distance to score (similarity)
+                    # For cosine space in Chroma, distance = 1 - similarity
+                    distance = results["distances"][0][i] if "distances" in results else 0.0
+                    score = 1.0 - distance
+                    
+                    formatted.append({
+                        "id": results["ids"][0][i],
+                        "content": results["documents"][0][i],
+                        "metadata": results["metadatas"][0][i],
+                        "score": score
+                    })
+            return formatted
+        else:
+            return self._search_records(query, self._store, top_k)
 
     def get_collection_size(self) -> int:
         """Return the total number of stored chunks."""
-        # TODO
-        raise NotImplementedError("Implement EmbeddingStore.get_collection_size")
+        if self._use_chroma and self._collection:
+            return self._collection.count()
+        return len(self._store)
 
     def search_with_filter(self, query: str, top_k: int = 3, metadata_filter: dict = None) -> list[dict]:
         """
@@ -74,8 +151,35 @@ class EmbeddingStore:
 
         First filter stored chunks by metadata_filter, then run similarity search.
         """
-        # TODO: filter by metadata, then search among filtered chunks
-        raise NotImplementedError("Implement EmbeddingStore.search_with_filter")
+        if self._use_chroma and self._collection:
+            query_embedding = self._embedding_fn(query)
+            results = self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=metadata_filter
+            )
+            formatted = []
+            if results["documents"]:
+                for i in range(len(results["documents"][0])):
+                    # Convert distance to score (similarity)
+                    distance = results["distances"][0][i] if "distances" in results else 0.0
+                    score = 1.0 - distance
+                    
+                    formatted.append({
+                        "id": results["ids"][0][i],
+                        "content": results["documents"][0][i],
+                        "metadata": results["metadatas"][0][i],
+                        "score": score
+                    })
+            return formatted
+        else:
+            filtered_store = self._store
+            if metadata_filter:
+                filtered_store = [
+                    rec for rec in self._store
+                    if all(rec["metadata"].get(k) == v for k, v in metadata_filter.items())
+                ]
+            return self._search_records(query, filtered_store, top_k)
 
     def delete_document(self, doc_id: str) -> bool:
         """
@@ -83,5 +187,11 @@ class EmbeddingStore:
 
         Returns True if any chunks were removed, False otherwise.
         """
-        # TODO: remove all stored chunks where metadata['doc_id'] == doc_id
-        raise NotImplementedError("Implement EmbeddingStore.delete_document")
+        if self._use_chroma and self._collection:
+            count_before = self._collection.count()
+            self._collection.delete(where={"doc_id": doc_id})
+            return self._collection.count() < count_before
+        else:
+            original_count = len(self._store)
+            self._store = [rec for rec in self._store if rec["metadata"].get("doc_id") != doc_id]
+            return len(self._store) < original_count
