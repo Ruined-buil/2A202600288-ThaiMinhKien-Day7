@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Callable, Optional
 
 
 class FixedSizeChunker:
@@ -76,6 +77,7 @@ class RecursiveChunker:
     Default separator priority:
         ["\n\n", "\n", ". ", " ", ""]
     """
+    #TODO: implement recursive chunking
 
     DEFAULT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
@@ -158,6 +160,7 @@ def compute_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 
     Returns 0.0 if either vector has zero magnitude.
     """
+    #TODO: implement cosine similarity formula
     dot_prod = _dot(vec_a, vec_b)
     mag_a = math.sqrt(sum(x * x for x in vec_a))
     mag_b = math.sqrt(sum(x * x for x in vec_b))
@@ -166,7 +169,6 @@ def compute_similarity(vec_a: list[float], vec_b: list[float]) -> float:
         return 0.0
     
     return dot_prod / (mag_a * mag_b)
-
 
 class ChunkingStrategyComparator:
     """Run all built-in chunking strategies and compare their results."""
@@ -190,3 +192,110 @@ class ChunkingStrategyComparator:
             }
         
         return results
+
+    def compare_with_quality(
+        self,
+        text: str,
+        chunk_size: int = 200,
+        llm_fn: Optional[Callable[[str], str]] = None,
+        query: Optional[str] = None,
+        embedding_fn: Optional[Callable[[str], list[float]]] = None
+    ) -> dict:
+        """
+        Compare strategies inclusive of AgenticChunker and compute a context-based
+        Retrieval Quality score.
+        """
+        strategies = {
+            "fixed_size": FixedSizeChunker(chunk_size=chunk_size),
+            "by_sentences": SentenceChunker(max_sentences_per_chunk=3),
+            "recursive": RecursiveChunker(chunk_size=chunk_size)
+        }
+
+        if llm_fn:
+            strategies["agentic"] = AgenticChunker(llm_fn=llm_fn)
+
+        query_vector = embedding_fn(query) if (query and embedding_fn) else None
+
+        results = {}
+        for name, chunker in strategies.items():
+            chunks = chunker.chunk(text)
+            count = len(chunks)
+            avg_length = sum(len(c) for c in chunks) / count if count > 0 else 0
+            
+            # Calculate Retrieval Quality (Max Similarity)
+            quality_score = 0.0
+            if query_vector and embedding_fn and chunks:
+                similarities = []
+                for chunk_text in chunks:
+                    chunk_vector = embedding_fn(chunk_text)
+                    similarities.append(compute_similarity(query_vector, chunk_vector))
+                quality_score = max(similarities) if similarities else 0.0
+
+            results[name] = {
+                "count": count,
+                "avg_length": avg_length,
+                "retrieval_quality": quality_score,
+                "chunks": chunks
+            }
+
+        return results
+
+class AgenticChunker:
+    """
+    Split text into semantically coherent chunks using a Language Model (LLM).
+
+    Algorithm:
+        1. Split text into sentences.
+        2. Iteratively evaluate if the next sentence belongs to the current chunk's context.
+        3. Break the chunk if the LLM detects a significant topic shift.
+    """
+
+    def __init__(self, llm_fn: Callable[[str], str], max_chunk_sentences: int = 5) -> None:
+        self.llm_fn = llm_fn
+        self.max_chunk_sentences = max_chunk_sentences
+
+    def chunk(self, text: str) -> list[str]:
+        if not text:
+            return []
+
+        # Split into sentences using a simple regex (similar to SentenceChunker)
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if not sentences:
+            return []
+
+        final_chunks: list[str] = []
+        current_chunk_buffer: list[str] = [sentences[0]]
+
+        for i in range(1, len(sentences)):
+            next_sentence = sentences[i]
+            
+            # If current chunk is already too long, split for performance/token limits
+            if len(current_chunk_buffer) >= self.max_chunk_sentences:
+                final_chunks.append(" ".join(current_chunk_buffer).strip())
+                current_chunk_buffer = [next_sentence]
+                continue
+
+            # Ask the LLM if the next sentence continues the current topic
+            context = " ".join(current_chunk_buffer)
+            prompt = f"""You are a document segmentation assistant.
+Determine if the following sentence continues the same topic as the previous context.
+Respond with 'YES' if it belongs to the same topic, or 'NO' if it introduces a new topic or significant shift.
+
+Context: "{context}"
+
+Sentence: "{next_sentence}"
+
+Result (YES/NO):"""
+
+            response = self.llm_fn(prompt).strip().upper()
+
+            if "YES" in response:
+                current_chunk_buffer.append(next_sentence)
+            else:
+                final_chunks.append(" ".join(current_chunk_buffer).strip())
+                current_chunk_buffer = [next_sentence]
+
+        if current_chunk_buffer:
+            final_chunks.append(" ".join(current_chunk_buffer).strip())
+
+        return final_chunks
