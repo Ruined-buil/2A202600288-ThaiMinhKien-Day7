@@ -1,8 +1,8 @@
 # Báo Cáo Lab 7: Embedding & Vector Store
 
 **Họ tên:** Thái Minh Kiên
-**Nhóm:** [Tên nhóm]
-**Ngày:** [Ngày nộp]
+**Nhóm:** D1
+**Ngày:** 11/4/2026
 
 ---
 
@@ -11,29 +11,31 @@
 ### Cosine Similarity (Ex 1.1)
 
 **High cosine similarity nghĩa là gì?**
-> *Viết 1-2 câu:*
+> High cosine similarity cho biết hai vector có hướng rất gần nhau trong không gian đa chiều. Trong văn bản, điều này có nghĩa là hai đoạn văn có sự tương đồng rất lớn về mặt ngữ nghĩa (semantics), bất kể độ dài của chúng có khác nhau hay không.
 
 **Ví dụ HIGH similarity:**
-- Sentence A:
-- Sentence B:
-- Tại sao tương đồng:
+- Sentence A: "The AI system is learning to generate code."
+- Sentence B: "Artificial intelligence models are gaining the ability to write software."
+- Tại sao tương đồng: Cả hai câu đều nói về khả năng lập trình của trí tuệ nhân tạo dù sử dụng các từ ngữ khác nhau.
 
 **Ví dụ LOW similarity:**
-- Sentence A:
-- Sentence B:
-- Tại sao khác:
+- Sentence A: "I enjoy drinking hot coffee in the morning."
+- Sentence B: "Quantum physics is a fundamental theory in physics."
+- Tại sao khác: Hai câu thuộc hai lĩnh vực hoàn toàn khác nhau (đời sống và khoa học), không có sự liên quan về từ vựng hay ý nghĩa.
 
 **Tại sao cosine similarity được ưu tiên hơn Euclidean distance cho text embeddings?**
-> *Viết 1-2 câu:*
+> Vì Cosine Similarity tập trung vào **hướng** của vector thay vì **đồ dài**. Trong văn bản, một câu ngắn và một đoạn văn dài có thể cùng nói về một chủ đề; Cosine Similarity sẽ nhận ra sự tương đồng này, trong khi Euclidean sẽ coi chúng là rất "xa" nhau đơn giản vì số lượng từ (độ dài vector) khác nhau.
 
 ### Chunking Math (Ex 1.2)
 
 **Document 10,000 ký tự, chunk_size=500, overlap=50. Bao nhiêu chunks?**
-> *Trình bày phép tính:*
-> *Đáp án:*
+> *Trình bày phép tính:* 
+> - Bước nhảy thực tế (Step) = `ChunkSize - Overlap` = `500 - 50 = 450`.
+> - Số lượng chunk = `ceil((Total - Overlap) / Step)` = `(10000 - 50) / 450` = `9950 / 450` ≈ `22.11`.
+> *Đáp án:* **23 chunks**.
 
 **Nếu overlap tăng lên 100, chunk count thay đổi thế nào? Tại sao muốn overlap nhiều hơn?**
-> *Viết 1-2 câu:*
+> Khi overlap tăng, bước nhảy (step) giảm xuống (`500 - 100 = 400`), dẫn đến **số lượng chunk sẽ tăng lên** (25 chunks). Chúng ta muốn overlap nhiều hơn để đảm bảo ngữ cảnh không bị đứt đoạn; thông tin quan trọng nằm ở cuối chunk này sẽ được lặp lại ở đầu chunk sau, giúp mô hình AI hiểu liên mạch hơn.
 
 ---
 
